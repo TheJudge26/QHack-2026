@@ -39,8 +39,7 @@ def approximation_ratio(edges):
     the input graph.
     """
     H_cost, H_mixer, vertices = build_hamiltonians(edges)
-    num_wires = len(vertices)
-    dev = qp.device("default.qubit", wires=num_wires)
+    dev = qp.device("default.qubit", wires=vertices)
 
     depth = 4
 
