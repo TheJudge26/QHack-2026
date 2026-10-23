@@ -17,70 +17,59 @@ def approximation_ratio(edges):
     - np.tensor(float): The approximation ratio of QAOA for the minimum vertex cover problem for
     the input graph.
     """
-    if not edges:
-        return np.tensor(1.0)
+    # Identify unique vertices and map to contiguous wire indices
+    nodes = sorted(list(set([v for edge in edges for v in edge])))
+    node_map = {node: i for i, node in enumerate(nodes)}
+    n_wires = len(nodes)
 
-    # 1. Remap vertex labels to contiguous 0, 1, ..., n-1
-    unique_v = sorted(list(set(v for edge in edges for v in edge)))
-    mapping = {v: i for i, v in enumerate(unique_v)}
-    mapped_edges = [[mapping[u], mapping[v]] for u, v in edges]
-    n = len(unique_v)
+    # Build cost Hamiltonian:
+    # H_cost = 0.75 * sum_{(i,j) in edges} (Z_i Z_j + Z_i + Z_j) - sum_{i in vertices} Z_i
+    coeffs = []
+    obs = []
+    for u, v in edges:
+        i, j = node_map[u], node_map[v]
+        coeffs.extend([0.75, 0.75, 0.75])
+        obs.extend([qp.PauliZ(i) @ qp.PauliZ(j), qp.PauliZ(i), qp.PauliZ(j)])
+    for i in range(n_wires):
+        coeffs.append(-1.0)
+        obs.append(qp.PauliZ(i))
 
-    # 2. Build Cost Hamiltonian with grouped degree terms
-    deg = {i: 0 for i in range(n)}
-    for u, v in mapped_edges:
-        deg[u] += 1
-        deg[v] += 1
+    cost_h = qp.Hamiltonian(coeffs, obs)
 
-    coeffs_cost = []
-    obs_cost = []
-    for u, v in mapped_edges:
-        coeffs_cost.append(0.75)
-        obs_cost.append(qp.PauliZ(u) @ qp.PauliZ(v))
-    for i in range(n):
-        coeffs_cost.append(0.75 * deg[i] - 1.0)
-        obs_cost.append(qp.PauliZ(i))
-    H_cost = qp.Hamiltonian(coeffs_cost, obs_cost)
+    # Build mixer Hamiltonian:
+    # H_mixer = sum_{i in vertices} X_i
+    mixer_h = qp.Hamiltonian([1.0] * n_wires, [qp.PauliX(i) for i in range(n_wires)])
 
-    # 3. Build Mixer Hamiltonian
-    coeffs_mixer = [1.0] * n
-    obs_mixer = [qp.PauliX(i) for i in range(n)]
-    H_mixer = qp.Hamiltonian(coeffs_mixer, obs_mixer)
+    dev = qp.device("default.qubit", wires=n_wires)
 
-    # 4. 4-Layer QAOA Circuit on standard contiguous wires 0..n-1
-    dev = qp.device("default.qubit", wires=n)
+    # QAOA layer: cost layer followed by mixer layer
+    def qaoa_layer(gamma, alpha):
+        qp.qaoa.cost_layer(gamma, cost_h)
+        qp.qaoa.mixer_layer(alpha, mixer_h)
 
-    @qp.qnode(dev)
+    # 4-layer QAOA circuit
+    @qp.qnode(dev, diff_method="backprop")
     def circuit(params):
-        for w in range(n):
+        for w in range(n_wires):
             qp.Hadamard(wires=w)
-        for p in range(4):
-            qp.qaoa.cost_layer(params[0][p], H_cost)
-            qp.qaoa.mixer_layer(params[1][p], H_mixer)
-        return qp.expval(H_cost)
+        qp.layer(qaoa_layer, 4, params[0], params[1])
+        return qp.expval(cost_h)
 
-    # 5. Optimize parameters (30 steps of Gradient Descent)
-    opt = qp.GradientDescentOptimizer(stepsize=0.01)
-    params = np.array([[0.25] * 4, [0.5] * 4], requires_grad=True)
+    # Exact classical ground state energy (minimum eigenvalue of H_cost)
+    cost_matrix = qp.matrix(cost_h, wire_order=range(n_wires))
+    min_eig = np.min(np.linalg.eigvalsh(cost_matrix))
 
-    for _ in range(30):
+    # Variational optimization of gamma and alpha angles
+    params = 0.5 * np.ones((2, 4), requires_grad=True)
+    opt = qp.AdamOptimizer(stepsize=0.1)
+    for _ in range(50):
         params = opt.step(circuit, params)
 
     min_expval = circuit(params)
 
-    # 6. True minimum eigenvalue of the diagonal cost Hamiltonian
-    idx = np.arange(1 << n)
-    shifts = np.array([n - 1 - i for i in range(n)])
-    bits = (idx[:, None] >> shifts) & 1
-    z = 1.0 - 2.0 * bits
-    cost_diag = np.zeros(1 << n)
-    for u, v in mapped_edges:
-        cost_diag = cost_diag + 0.75 * (z[:, u] * z[:, v] + z[:, u] + z[:, v])
-    cost_diag = cost_diag - np.sum(z, axis=1)
-    min_eig = float(np.min(cost_diag))
-
-    ratio = float(min_expval / min_eig)
-    return np.tensor(ratio)
+    # Return approximation ratio: r* = <H_cost> / E_min
+    ratio = min_expval / min_eig
+    return ratio
 
 
 # These functions are responsible for testing the solution.
@@ -106,15 +95,19 @@ test_cases = [
 ]
 
 if __name__ == "__main__":
+    # This will run the public test cases locally
     for i, (input_, expected_output) in enumerate(test_cases):
         print(f"Running test case {i} with input '{input_}'...")
+
         try:
             output = run(input_)
+
         except Exception as exc:
             print(f"Runtime Error. {exc}")
+
         else:
             if message := check(output, expected_output):
                 print(f"Wrong Answer. Have: '{output}'. Want: '{expected_output}'.")
+
             else:
-                print(f"Output: {output} Expected: {expected_output}")
                 print("Correct!")

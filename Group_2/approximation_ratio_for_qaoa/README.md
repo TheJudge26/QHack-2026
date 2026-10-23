@@ -1,127 +1,93 @@
-# Approximation Ratio for QAOA (400 pts)
+# Challenge: Approximation Ratio for QAOA (400 pts)
 
-## Problem Overview
-The **Quantum Approximate Optimization Algorithm (QAOA)** is a variational quantum-classical hybrid algorithm designed to find approximate solutions to combinatorial optimization problems. In this challenge, QAOA is applied to the **Minimum Vertex Cover** problem.
+## 1. Problem Overview
+The **Quantum Approximate Optimization Algorithm (QAOA)** is a variational quantum algorithm developed by Farhi, Goldstone, and Gutmann (2014) designed to find approximate solutions to combinatorial optimization problems. In this challenge, we apply QAOA to the **Minimum Vertex Cover (MVC)** problem on an arbitrary graph $G = (V, E)$.
 
-A **vertex cover** of an undirected graph $G = (V, E)$ is a subset of vertices $S \subseteq V$ such that every edge $(i, j) \in E$ is incident to at least one vertex in $S$. The **Minimum Vertex Cover** problem asks for a vertex cover $S$ with minimum cardinality $|S|$.
+A **vertex cover** of a graph $G = (V, E)$ is a subset of vertices $S \subseteq V$ such that every edge $(u, v) \in E$ has at least one endpoint in $S$ ($u \in S$ or $v \in S$). The **Minimum Vertex Cover** problem seeks to find a valid vertex cover $S$ with the minimum cardinality $|S|$.
+
+The quality of the quantum heuristic solution is benchmarked against the exact classical optimum by computing the **approximation ratio**:
+$$r^* = \frac{\min_{\vec{\gamma}, \vec{\alpha}} \langle H_{\text{cost}} \rangle}{E_{\min}}$$
+where $\langle H_{\text{cost}} \rangle$ is the expectation value of the cost Hamiltonian evaluated on the variational state $|\psi(\vec{\gamma}, \vec{\alpha})\rangle$, and $E_{\min}$ is the true minimum eigenvalue of $H_{\text{cost}}$.
 
 ---
 
-## 1. Problem Hamiltonian Formulation
+## 2. Hamiltonian Formulations
 
-### Cost Hamiltonian ($H_{\text{cost}}$)
-Mapping binary variables $x_i \in \{0, 1\}$ (where $x_i = 1$ indicates vertex $i \in S$) to spin operators $Z_i$ via $x_i = \frac{1 - Z_i}{2}$ yields the cost Hamiltonian:
+### 1. Cost Hamiltonian ($H_{\text{cost}}$)
+In binary optimization variables $x_i \in \{0, 1\}$ (where $x_i = 1$ if vertex $i \in S$ is chosen, and $0$ otherwise), the Minimum Vertex Cover problem minimizes $\sum_{i \in V} x_i$ subject to the edge coverage condition $x_i + x_j \ge 1$ for all $(i, j) \in E$. 
+
+In an unconstrained quadratic penalty formulation, a penalty of magnitude $P = 3$ is added for each uncovered edge $(1 - x_i)(1 - x_j)$:
+$$C(x) = \sum_{i \in V} x_i + 3 \sum_{(i,j) \in E} (1 - x_i)(1 - x_j)$$
+
+Mapping binary variables $x_i$ to Pauli spin operators via $x_i \mapsto \frac{I - Z_i}{2}$ yields the exact cost Hamiltonian specified by the challenge:
 $$H_{\text{cost}} = \frac{3}{4} \sum_{(i, j) \in E} (Z_i Z_j + Z_i + Z_j) - \sum_{i \in V} Z_i$$
 
-For each vertex $i$ with degree $d_i$, collecting the linear $Z_i$ terms gives:
-$$\left( \frac{3}{4} d_i - 1 \right) Z_i$$
-Grouping these terms reduces the gate count by half without altering the underlying unitary evolution.
-
-### Mixer Hamiltonian ($H_{\text{mixer}}$)
+### 2. Mixer Hamiltonian ($H_{\text{mixer}}$)
+To drive transitions between bitstrings in the unconstrained search space, the standard transverse-field mixer is used:
 $$H_{\text{mixer}} = \sum_{i \in V} X_i$$
 
 ---
 
-## 2. QAOA Circuit Architecture & Contiguous Wire Remapping
+## 3. QAOA Circuit Architecture ($p = 4$)
 
-To ensure arbitrary vertex label sets in hidden test cases (e.g. non-consecutive or 1-indexed integers) map reliably to quantum device wires, vertices are remapped to contiguous indices $0, 1, \dots, n-1$:
-$$\text{mapping}: v \mapsto i \in \{0, 1, \dots, n-1\}$$
+The QAOA ansatz consists of:
+1. **Initial State Preparation**: All $n = |V|$ qubits are initialized into an equal superposition of all computational basis states via single-qubit Hadamard gates:
+   $$|\psi_0\rangle = H^{\otimes n} |0\rangle^{\otimes n} = \frac{1}{\sqrt{2^n}} \sum_{x \in \{0, 1\}^n} |x\rangle$$
 
-1. **State Initialization:** Hadamard gates $H^{\otimes n}$ on wires $0 \dots n-1$.
-2. **4 QAOA Layers:** For $p \in \{0, 1, 2, 3\}$:
-   - $U_C(\gamma_p) = e^{-i \gamma_p H_{\text{cost}}}$ via `qp.qaoa.cost_layer`
-   - $U_M(\alpha_p) = e^{-i \alpha_p H_{\text{mixer}}}$ via `qp.qaoa.mixer_layer`
-3. **Expectation Value:** $\langle H_{\text{cost}} \rangle(\boldsymbol{\gamma}, \boldsymbol{\alpha})$.
-
----
-
-## 3. Parameter Optimization & Ground State Energy
-
-### Classical Optimization
-- **Optimizer:** `qp.GradientDescentOptimizer(stepsize=0.01)`
-- **Initial Guess:** $\boldsymbol{\gamma}_0 = [0.25, 0.25, 0.25, 0.25]$, $\boldsymbol{\alpha}_0 = [0.5, 0.5, 0.5, 0.5]$
-- **Steps:** 30 iterations (executes in $\sim 0.35$s per graph, preventing test suite timeouts).
-
-### True Ground State Energy Calculation
-Because $H_{\text{cost}}$ is diagonal, its minimum eigenvalue is computed efficiently over the $2^n$ basis configurations using vectorized bit shifts without building exponential $2^n \times 2^n$ dense matrices (avoiding memory exhaustion).
-
-### Approximation Ratio ($r^*$)
-$$r^* = \frac{\min_{\boldsymbol{\gamma}, \boldsymbol{\alpha}} \langle H_{\text{cost}} \rangle(\boldsymbol{\gamma}, \boldsymbol{\alpha})}{E_{\min}(H_{\text{cost}})}$$
+2. **$p$-Alternating Layers ($p = 4$)**: Four alternating layers of cost and mixer unitary evolutions:
+   $$|\psi(\vec{\gamma}, \vec{\alpha})\rangle = \prod_{l=1}^4 \left( e^{-i \alpha_l H_{\text{mixer}}} e^{-i \gamma_l H_{\text{cost}}} \right) |\psi_0\rangle$$
+   - **Cost evolution layer**: $U_C(\gamma_l) = \exp(-i \gamma_l H_{\text{cost}})$ implemented with `pennylane.qaoa.cost_layer`.
+   - **Mixer evolution layer**: $U_M(\alpha_l) = \exp(-i \alpha_l H_{\text{mixer}})$ implemented with `pennylane.qaoa.mixer_layer`.
 
 ---
 
-## 4. Code Mapping for Platform Submission
+## 4. Optimization & Approximation Ratio
 
-### Box 1 (Helper Functions):
-```python
-def get_min_eig(mapped_edges, n):
-    idx = np.arange(1 << n)
-    shifts = np.array([n - 1 - i for i in range(n)])
-    bits = (idx[:, None] >> shifts) & 1
-    z = 1.0 - 2.0 * bits
-    cost_diag = np.zeros(1 << n)
-    for u, v in mapped_edges:
-        cost_diag = cost_diag + 0.75 * (z[:, u] * z[:, v] + z[:, u] + z[:, v])
-    cost_diag = cost_diag - np.sum(z, axis=1)
-    return float(np.min(cost_diag))
+1. **Variational Expectation Value**:
+   $$\langle H_{\text{cost}} \rangle(\vec{\gamma}, \vec{\alpha}) = \langle \psi(\vec{\gamma}, \vec{\alpha}) | H_{\text{cost}} | \psi(\vec{\gamma}, \vec{\alpha}) \rangle$$
+
+2. **Exact Classical Ground State ($E_{\min}$)**:
+   The cost Hamiltonian matrix $H_{\text{cost}}$ is diagonal in the computational basis. Its minimum eigenvalue $E_{\min} = \min_k \lambda_k(H_{\text{cost}})$ represents the true optimal energy of the problem.
+
+3. **Optimization Schedule**:
+   - Initial parameters: $\vec{\gamma}_0 = [0.5, 0.5, 0.5, 0.5]$, $\vec{\alpha}_0 = [0.5, 0.5, 0.5, 0.5]$.
+   - Optimizer: `pennylane.AdamOptimizer(stepsize=0.1)`.
+   - Iterations: 50 gradient update steps.
+   - The approximation ratio is computed as:
+     $$r^* = \frac{\langle H_{\text{cost}} \rangle}{E_{\min}}$$
+
+---
+
+## 5. Verification & Public Test Cases
+
+The solution is verified against the challenge test suite under a relative tolerance of `rtol = 5e-2` (5%):
+
+### Test Case 0:
+- **Input Edges**: `[[0, 1], [1, 2], [0, 2], [2, 3]]` (Triangle with tail)
+- **True Ground State Energy**: $E_{\min} = -3.0$
+- **Target Approximation Ratio**: `0.58160924`
+- **Computed Output**: `0.56292552`
+- **Relative Error**: $3.2\% < 5.0\%$ $\implies$ **PASSED**
+
+### Test Case 1:
+- **Input Edges**: `[[0, 1], [1, 2], [2, 3], [3, 0]]` (4-cycle $C_4$)
+- **True Ground State Energy**: $E_{\min} = -3.0$
+- **Target Approximation Ratio**: `0.94746734`
+- **Computed Output**: `0.95173331`
+- **Relative Error**: $0.45\% < 5.0\%$ $\implies$ **PASSED**
+
+---
+
+## 6. Execution
+
+Run the script locally inside the virtual environment:
+```powershell
+.\.venv\Scripts\python.exe D:\QHack-2026\Group_2\approximation_ratio_for_qaoa\approximation_ratio_for_qaoa.py
 ```
-
-### Box 2 (Inside `approximation_ratio(edges)`):
-```python
-    if not edges:
-        return np.tensor(1.0)
-
-    # 1. Remap vertex labels to contiguous 0, 1, ..., n-1
-    unique_v = sorted(list(set(v for edge in edges for v in edge)))
-    mapping = {v: i for i, v in enumerate(unique_v)}
-    mapped_edges = [[mapping[u], mapping[v]] for u, v in edges]
-    n = len(unique_v)
-
-    # 2. Build Cost Hamiltonian with grouped degree terms
-    deg = {i: 0 for i in range(n)}
-    for u, v in mapped_edges:
-        deg[u] += 1
-        deg[v] += 1
-
-    coeffs_cost = []
-    obs_cost = []
-    for u, v in mapped_edges:
-        coeffs_cost.append(0.75)
-        obs_cost.append(qp.PauliZ(u) @ qp.PauliZ(v))
-    for i in range(n):
-        coeffs_cost.append(0.75 * deg[i] - 1.0)
-        obs_cost.append(qp.PauliZ(i))
-    H_cost = qp.Hamiltonian(coeffs_cost, obs_cost)
-
-    # 3. Build Mixer Hamiltonian
-    coeffs_mixer = [1.0] * n
-    obs_mixer = [qp.PauliX(i) for i in range(n)]
-    H_mixer = qp.Hamiltonian(coeffs_mixer, obs_mixer)
-
-    # 4. 4-Layer QAOA Circuit on standard contiguous wires 0..n-1
-    dev = qp.device("default.qubit", wires=n)
-
-    @qp.qnode(dev)
-    def circuit(params):
-        for w in range(n):
-            qp.Hadamard(wires=w)
-        for p in range(4):
-            qp.qaoa.cost_layer(params[0][p], H_cost)
-            qp.qaoa.mixer_layer(params[1][p], H_mixer)
-        return qp.expval(H_cost)
-
-    # 5. Optimize parameters (30 steps of Gradient Descent)
-    opt = qp.GradientDescentOptimizer(stepsize=0.01)
-    params = np.array([[0.25] * 4, [0.5] * 4], requires_grad=True)
-
-    for _ in range(30):
-        params = opt.step(circuit, params)
-
-    min_expval = circuit(params)
-
-    # 6. True minimum eigenvalue and approximation ratio
-    min_eig = get_min_eig(mapped_edges, n)
-    ratio = float(min_expval / min_eig)
-
-    return np.tensor(ratio)
+Output:
+```
+Running test case 0 with input '[[0, 1], [1, 2], [0, 2], [2, 3]]'...
+Correct!
+Running test case 1 with input '[[0, 1], [1, 2], [2, 3], [3, 0]]'...
+Correct!
 ```
