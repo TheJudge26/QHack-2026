@@ -4,20 +4,6 @@ import pennylane.numpy as np
 
 # Write any helper functions you may need here
 
-def get_min_eig(mapped_edges, n):
-    """Computes the true minimum eigenvalue of the diagonal cost Hamiltonian
-    using only pre-defined np without any additional imports or exponential dense matrices.
-    """
-    idx = np.arange(1 << n)
-    shifts = np.array([n - 1 - i for i in range(n)])
-    bits = (idx[:, None] >> shifts) & 1
-    z = 1.0 - 2.0 * bits
-    cost_diag = np.zeros(1 << n)
-    for u, v in mapped_edges:
-        cost_diag = cost_diag + 0.75 * (z[:, u] * z[:, v] + z[:, u] + z[:, v])
-    cost_diag = cost_diag - np.sum(z, axis=1)
-    return float(np.min(cost_diag))
-
 
 def approximation_ratio(edges):
     """This function calculates the approximation ratio of QAOA for
@@ -82,10 +68,18 @@ def approximation_ratio(edges):
 
     min_expval = circuit(params)
 
-    # 6. True minimum eigenvalue and approximation ratio
-    min_eig = get_min_eig(mapped_edges, n)
-    ratio = float(min_expval / min_eig)
+    # 6. True minimum eigenvalue of the diagonal cost Hamiltonian
+    idx = np.arange(1 << n)
+    shifts = np.array([n - 1 - i for i in range(n)])
+    bits = (idx[:, None] >> shifts) & 1
+    z = 1.0 - 2.0 * bits
+    cost_diag = np.zeros(1 << n)
+    for u, v in mapped_edges:
+        cost_diag = cost_diag + 0.75 * (z[:, u] * z[:, v] + z[:, u] + z[:, v])
+    cost_diag = cost_diag - np.sum(z, axis=1)
+    min_eig = float(np.min(cost_diag))
 
+    ratio = float(min_expval / min_eig)
     return np.tensor(ratio)
 
 
@@ -95,6 +89,7 @@ def run(test_case_input: str) -> str:
     output = approximation_ratio(ins)
 
     return str(output)
+
 
 def check(solution_output: str, expected_output: str) -> None:
     solution_output = json.loads(solution_output)
