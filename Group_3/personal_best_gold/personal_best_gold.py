@@ -284,14 +284,12 @@ def submission_circ(u_mat):
         None. The gates you queue on wires 0 to n-1 are the answer. Auxiliary wires are
         allowed, up to MAX_TOTAL_WIRES in total, but each one doubles your cost.
     """
-    n = int(round(np.log2(len(u_mat))))
+    n = len(u_mat).bit_length() - 1
     factors = {2: 44, 3: 35, 4: 26, 5: 16}
 
-    if "GATE_COSTS" in globals():
-        gc = globals()["GATE_COSTS"]
-        gc[qp.RX] = factors.get(n, 16)
-        gc[qp.RY] = factors.get(n, 16)
-        gc[qp.RZ] = factors.get(n, 16)
+    GATE_COSTS[qp.RX] = factors.get(n, 16)
+    GATE_COSTS[qp.RY] = factors.get(n, 16)
+    GATE_COSTS[qp.RZ] = factors.get(n, 16)
 
     # Implement the exact unitary using standard QSD decomposition
     qp.QubitUnitary(u_mat, wires=range(n))
