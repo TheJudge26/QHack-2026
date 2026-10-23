@@ -3,6 +3,7 @@ import pennylane as qp
 import pennylane.numpy as np
 
 # Write any helper functions you may need here
+from scipy.optimize import minimize
 
 
 def approximation_ratio(edges):
@@ -17,59 +18,57 @@ def approximation_ratio(edges):
     - np.tensor(float): The approximation ratio of QAOA for the minimum vertex cover problem for
     the input graph.
     """
-    # Identify unique vertices and map to contiguous wire indices
-    nodes = sorted(list(set([v for edge in edges for v in edge])))
-    node_map = {node: i for i, node in enumerate(nodes)}
-    n_wires = len(nodes)
-
-    # Build cost Hamiltonian:
-    # H_cost = 0.75 * sum_{(i,j) in edges} (Z_i Z_j + Z_i + Z_j) - sum_{i in vertices} Z_i
-    coeffs = []
-    obs = []
+    # Canonicalize unique undirected edges
+    unique_edges = set()
     for u, v in edges:
-        i, j = node_map[u], node_map[v]
-        coeffs.extend([0.75, 0.75, 0.75])
-        obs.extend([qp.PauliZ(i) @ qp.PauliZ(j), qp.PauliZ(i), qp.PauliZ(j)])
-    for i in range(n_wires):
-        coeffs.append(-1.0)
-        obs.append(qp.PauliZ(i))
+        if u != v:
+            unique_edges.add(tuple(sorted([u, v])))
+    unique_edges = sorted(list(unique_edges))
 
-    cost_h = qp.Hamiltonian(coeffs, obs)
+    nodes = sorted(list(set([v for edge in unique_edges for v in edge])))
+    n_wires = len(nodes)
+    mapping = {v: i for i, v in enumerate(nodes)}
 
-    # Build mixer Hamiltonian:
-    # H_mixer = sum_{i in vertices} X_i
-    mixer_h = qp.Hamiltonian([1.0] * n_wires, [qp.PauliX(i) for i in range(n_wires)])
+    # Precompute diagonal of cost Hamiltonian:
+    # H_cost = 0.75 * sum_{(i,j) in edges} (Z_i Z_j + Z_i + Z_j) - sum_{i in vertices} Z_i
+    diag_H = np.zeros(1 << n_wires)
+    for idx in range(1 << n_wires):
+        bits = [(1 - 2 * ((idx >> (n_wires - 1 - i)) & 1)) for i in range(n_wires)]
+        val = 0.0
+        for u, v in unique_edges:
+            zi = bits[mapping[u]]
+            zj = bits[mapping[v]]
+            val += 0.75 * (zi * zj + zi + zj)
+        for i in range(n_wires):
+            val -= bits[i]
+        diag_H[idx] = val
 
-    dev = qp.device("default.qubit", wires=n_wires)
+    # Classical ground state energy of H_cost
+    min_eig = np.min(diag_H)
 
-    # QAOA layer: cost layer followed by mixer layer
-    def qaoa_layer(gamma, alpha):
-        qp.qaoa.cost_layer(gamma, cost_h)
-        qp.qaoa.mixer_layer(alpha, mixer_h)
+    # Ultra-fast exact statevector QAOA simulation for depth p = 4
+    def cost_func(params):
+        gamma = params[:4]
+        alpha = params[4:]
+        state = np.ones(1 << n_wires, dtype=complex) / np.sqrt(1 << n_wires)
+        state = state.reshape([2] * n_wires)
+        for p in range(4):
+            # Cost layer: exp(-i * gamma_p * H_cost)
+            state = (state.flatten() * np.exp(-1j * gamma[p] * diag_H)).reshape([2] * n_wires)
+            # Mixer layer: exp(-i * alpha_p * X) applied to each wire
+            c = np.cos(alpha[p])
+            s = -1j * np.sin(alpha[p])
+            rot = np.array([[c, s], [s, c]], dtype=complex)
+            for q in range(n_wires):
+                state = np.tensordot(rot, state, axes=(1, q))
+                state = np.moveaxis(state, 0, q)
+        probs = np.abs(state.flatten()) ** 2
+        return float(np.sum(probs * diag_H))
 
-    # 4-layer QAOA circuit
-    @qp.qnode(dev, diff_method="backprop")
-    def circuit(params):
-        for w in range(n_wires):
-            qp.Hadamard(wires=w)
-        qp.layer(qaoa_layer, 4, params[0], params[1])
-        return qp.expval(cost_h)
-
-    # Exact classical ground state energy (minimum eigenvalue of H_cost)
-    cost_matrix = qp.matrix(cost_h, wire_order=range(n_wires))
-    min_eig = np.min(np.linalg.eigvalsh(cost_matrix))
-
-    # Variational optimization of gamma and alpha angles
-    params = 0.5 * np.ones((2, 4), requires_grad=True)
-    opt = qp.AdamOptimizer(stepsize=0.1)
-    for _ in range(50):
-        params = opt.step(circuit, params)
-
-    min_expval = circuit(params)
-
-    # Return approximation ratio: r* = <H_cost> / E_min
-    ratio = min_expval / min_eig
-    return ratio
+    # Variational optimization from the standard initial point
+    res = minimize(cost_func, 0.5 * np.ones(8), method='SLSQP')
+    ratio = res.fun / min_eig
+    return np.tensor(float(ratio))
 
 
 # These functions are responsible for testing the solution.
@@ -95,7 +94,6 @@ test_cases = [
 ]
 
 if __name__ == "__main__":
-    # This will run the public test cases locally
     for i, (input_, expected_output) in enumerate(test_cases):
         print(f"Running test case {i} with input '{input_}'...")
 

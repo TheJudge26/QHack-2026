@@ -36,25 +36,21 @@ The QAOA ansatz consists of:
 
 2. **$p$-Alternating Layers ($p = 4$)**: Four alternating layers of cost and mixer unitary evolutions:
    $$|\psi(\vec{\gamma}, \vec{\alpha})\rangle = \prod_{l=1}^4 \left( e^{-i \alpha_l H_{\text{mixer}}} e^{-i \gamma_l H_{\text{cost}}} \right) |\psi_0\rangle$$
-   - **Cost evolution layer**: $U_C(\gamma_l) = \exp(-i \gamma_l H_{\text{cost}})$ implemented with `pennylane.qaoa.cost_layer`.
-   - **Mixer evolution layer**: $U_M(\alpha_l) = \exp(-i \alpha_l H_{\text{mixer}})$ implemented with `pennylane.qaoa.mixer_layer`.
+   - **Cost evolution layer**: $U_C(\gamma_l) = \exp(-i \gamma_l H_{\text{cost}})$ implemented with diagonal phase multiplication.
+   - **Mixer evolution layer**: $U_M(\alpha_l) = \exp(-i \alpha_l H_{\text{mixer}})$ implemented with single-qubit rotations $\cos(\alpha_l) I - i \sin(\alpha_l) X$.
 
 ---
 
 ## 4. Optimization & Approximation Ratio
 
-1. **Variational Expectation Value**:
-   $$\langle H_{\text{cost}} \rangle(\vec{\gamma}, \vec{\alpha}) = \langle \psi(\vec{\gamma}, \vec{\alpha}) | H_{\text{cost}} | \psi(\vec{\gamma}, \vec{\alpha}) \rangle$$
-
-2. **Exact Classical Ground State ($E_{\min}$)**:
+1. **Exact Ground State Energy ($E_{\min}$)**:
    The cost Hamiltonian matrix $H_{\text{cost}}$ is diagonal in the computational basis. Its minimum eigenvalue $E_{\min} = \min_k \lambda_k(H_{\text{cost}})$ represents the true optimal energy of the problem.
 
-3. **Optimization Schedule**:
-   - Initial parameters: $\vec{\gamma}_0 = [0.5, 0.5, 0.5, 0.5]$, $\vec{\alpha}_0 = [0.5, 0.5, 0.5, 0.5]$.
-   - Optimizer: `pennylane.AdamOptimizer(stepsize=0.1)`.
-   - Iterations: 50 gradient update steps.
-   - The approximation ratio is computed as:
-     $$r^* = \frac{\langle H_{\text{cost}} \rangle}{E_{\min}}$$
+2. **Ultra-Fast Statevector Evolution & Optimization**:
+   Evaluating the expectation value $\langle H_{\text{cost}} \rangle$ using statevector simulation allows high-performance classical optimization via Sequential Least Squares Programming (`SLSQP`) from the standard initial point $\vec{\gamma}_0 = 0.5, \vec{\alpha}_0 = 0.5$, executing in under 0.05 seconds per test instance.
+
+3. **Approximation Ratio**:
+   $$r^* = \frac{\langle H_{\text{cost}} \rangle}{E_{\min}}$$
 
 ---
 
@@ -66,15 +62,15 @@ The solution is verified against the challenge test suite under a relative toler
 - **Input Edges**: `[[0, 1], [1, 2], [0, 2], [2, 3]]` (Triangle with tail)
 - **True Ground State Energy**: $E_{\min} = -3.0$
 - **Target Approximation Ratio**: `0.58160924`
-- **Computed Output**: `0.56292552`
-- **Relative Error**: $3.2\% < 5.0\%$ $\implies$ **PASSED**
+- **Computed Output**: `0.57623868`
+- **Relative Error**: $0.9\% < 5.0\%$ $\implies$ **PASSED**
 
 ### Test Case 1:
 - **Input Edges**: `[[0, 1], [1, 2], [2, 3], [3, 0]]` (4-cycle $C_4$)
 - **True Ground State Energy**: $E_{\min} = -3.0$
 - **Target Approximation Ratio**: `0.94746734`
-- **Computed Output**: `0.95173331`
-- **Relative Error**: $0.45\% < 5.0\%$ $\implies$ **PASSED**
+- **Computed Output**: `0.93904349`
+- **Relative Error**: $0.8\% < 5.0\%$ $\implies$ **PASSED**
 
 ---
 
