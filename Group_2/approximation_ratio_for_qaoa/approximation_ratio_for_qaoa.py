@@ -4,26 +4,19 @@ import pennylane.numpy as np
 
 # Write any helper functions you may need here
 
-def build_hamiltonians(edges):
-    vertices = sorted(list(set(v for edge in edges for v in edge)))
-
-    cost_coeffs = []
-    cost_terms = []
-    for i, j in edges:
-        cost_coeffs.extend([0.75, 0.75, 0.75])
-        cost_terms.extend([qp.PauliZ(i) @ qp.PauliZ(j), qp.PauliZ(i), qp.PauliZ(j)])
-
-    for i in vertices:
-        cost_coeffs.append(-1.0)
-        cost_terms.append(qp.PauliZ(i))
-
-    H_cost = qp.Hamiltonian(cost_coeffs, cost_terms)
-
-    mixer_coeffs = [1.0] * len(vertices)
-    mixer_terms = [qp.PauliX(i) for i in vertices]
-    H_mixer = qp.Hamiltonian(mixer_coeffs, mixer_terms)
-
-    return H_cost, H_mixer, vertices
+def get_min_eig(mapped_edges, n):
+    """Computes the true minimum eigenvalue of the diagonal cost Hamiltonian
+    using only pre-defined np without any additional imports or exponential dense matrices.
+    """
+    idx = np.arange(1 << n)
+    shifts = np.array([n - 1 - i for i in range(n)])
+    bits = (idx[:, None] >> shifts) & 1
+    z = 1.0 - 2.0 * bits
+    cost_diag = np.zeros(1 << n)
+    for u, v in mapped_edges:
+        cost_diag = cost_diag + 0.75 * (z[:, u] * z[:, v] + z[:, u] + z[:, v])
+    cost_diag = cost_diag - np.sum(z, axis=1)
+    return float(np.min(cost_diag))
 
 
 def approximation_ratio(edges):
@@ -38,30 +31,60 @@ def approximation_ratio(edges):
     - np.tensor(float): The approximation ratio of QAOA for the minimum vertex cover problem for
     the input graph.
     """
-    H_cost, H_mixer, vertices = build_hamiltonians(edges)
-    dev = qp.device("default.qubit", wires=vertices)
+    if not edges:
+        return np.tensor(1.0)
 
-    depth = 4
+    # 1. Remap vertex labels to contiguous 0, 1, ..., n-1
+    unique_v = sorted(list(set(v for edge in edges for v in edge)))
+    mapping = {v: i for i, v in enumerate(unique_v)}
+    mapped_edges = [[mapping[u], mapping[v]] for u, v in edges]
+    n = len(unique_v)
 
-    def qaoa_layer(gamma, beta):
-        qp.qaoa.cost_layer(gamma, H_cost)
-        qp.qaoa.mixer_layer(beta, H_mixer)
+    # 2. Build Cost Hamiltonian with grouped degree terms
+    deg = {i: 0 for i in range(n)}
+    for u, v in mapped_edges:
+        deg[u] += 1
+        deg[v] += 1
+
+    coeffs_cost = []
+    obs_cost = []
+    for u, v in mapped_edges:
+        coeffs_cost.append(0.75)
+        obs_cost.append(qp.PauliZ(u) @ qp.PauliZ(v))
+    for i in range(n):
+        coeffs_cost.append(0.75 * deg[i] - 1.0)
+        obs_cost.append(qp.PauliZ(i))
+    H_cost = qp.Hamiltonian(coeffs_cost, obs_cost)
+
+    # 3. Build Mixer Hamiltonian
+    coeffs_mixer = [1.0] * n
+    obs_mixer = [qp.PauliX(i) for i in range(n)]
+    H_mixer = qp.Hamiltonian(coeffs_mixer, obs_mixer)
+
+    # 4. 4-Layer QAOA Circuit on standard contiguous wires 0..n-1
+    dev = qp.device("default.qubit", wires=n)
 
     @qp.qnode(dev)
     def circuit(params):
-        for w in vertices:
+        for w in range(n):
             qp.Hadamard(wires=w)
-        qp.layer(qaoa_layer, depth, params[0], params[1])
+        for p in range(4):
+            qp.qaoa.cost_layer(params[0][p], H_cost)
+            qp.qaoa.mixer_layer(params[1][p], H_mixer)
         return qp.expval(H_cost)
 
-    opt = qp.AdamOptimizer(stepsize=0.1)
-    params = np.array([[0.5] * depth, [0.5] * depth], requires_grad=True)
+    # 5. Optimize parameters (30 steps of Gradient Descent)
+    opt = qp.GradientDescentOptimizer(stepsize=0.01)
+    params = np.array([[0.25] * 4, [0.5] * 4], requires_grad=True)
 
-    for _ in range(50):
-        params, cost = opt.step_and_cost(circuit, params)
+    for _ in range(30):
+        params = opt.step(circuit, params)
 
-    min_eig = np.min(qp.eigvals(H_cost))
-    ratio = cost / min_eig
+    min_expval = circuit(params)
+
+    # 6. True minimum eigenvalue and approximation ratio
+    min_eig = get_min_eig(mapped_edges, n)
+    ratio = float(min_expval / min_eig)
 
     return np.tensor(ratio)
 
@@ -90,18 +113,13 @@ test_cases = [
 if __name__ == "__main__":
     for i, (input_, expected_output) in enumerate(test_cases):
         print(f"Running test case {i} with input '{input_}'...")
-
         try:
             output = run(input_)
-
         except Exception as exc:
-            import traceback
-            traceback.print_exc()
             print(f"Runtime Error. {exc}")
-
         else:
             if message := check(output, expected_output):
                 print(f"Wrong Answer. Have: '{output}'. Want: '{expected_output}'.")
-
             else:
+                print(f"Output: {output} Expected: {expected_output}")
                 print("Correct!")
